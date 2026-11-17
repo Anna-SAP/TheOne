@@ -283,7 +283,7 @@
   function trackById(id) { return state.tracks.filter(function (t) { return t.id === id; })[0]; }
 
   function playButton(id, start, len, label) {
-    var btn = h('button', { class: 'play', type: 'button', 'aria-pressed': 'false', text: label + ' ' + fmtTime(start) + '–' + fmtTime(start + len) });
+    var btn = h('button', { class: 'play', type: 'button', 'aria-pressed': 'false', text: (label ? label + ' ' : '') + fmtTime(start) + '–' + fmtTime(start + len) });
     btn.addEventListener('click', function () { togglePlay(trackById(id), start, len, btn); });
     return btn;
   }
@@ -456,6 +456,9 @@
       reasons
     ]));
 
+    // 4b. 短视频切片
+    body.appendChild(clipSection(v));
+
     // 5. 落选的歌
     var rivals = h('ol', { class: 'rivals' }), charts = [];
     v.verdicts.forEach(function (rv) {
@@ -492,16 +495,17 @@
     ]));
 
     // 7. 全部分数
+    var firstClip = judge.DIMS.filter(function (d) { return d.group === 'clip'; })[0];
     var head = h('tr', {}, [h('th', { scope: 'col', text: '歌曲' })].concat(judge.DIMS.map(function (d) {
-      return h('th', { scope: 'col', text: d.label + ' ' + Math.round(d.weight * 100) + '%' });
-    })).concat([h('th', { scope: 'col', text: '总分' })]));
+      return h('th', { scope: 'col', class: d === firstClip ? 'grp' : '' }, [d.label, h('span', { class: 'wt', text: Math.round(d.weight * 100) + '%' })]);
+    })).concat([h('th', { scope: 'col', class: 'grp', text: '总分' })]));
     var rows = v.ranked.map(function (r) {
       return h('tr', { class: r === w ? 'is-one' : '' }, [h('td', { text: r.rank + '. ' + r.name })].concat(judge.DIMS.map(function (d) {
-        return h('td', { text: String(Math.round(r.scores[d.id])) });
-      })).concat([h('td', { class: 'total', text: r.total.toFixed(1) })]));
+        return h('td', { class: d === firstClip ? 'grp' : '', text: String(Math.round(r.scores[d.id])) });
+      })).concat([h('td', { class: 'total grp', text: r.total.toFixed(1) })]));
     });
     body.appendChild(h('section', { class: 'block' }, [
-      h('div', { class: 'block-head' }, [h('h2', { text: '完整记分表' }), h('p', { text: '每项 0–100 分，表头是它在总分里的权重。' })]),
+      h('div', { class: 'block-head' }, [h('h2', { text: '完整记分表' }), h('p', { text: '每项 0–100 分，表头是它在总分里的权重。前七项看整首歌，后两项看剪下来的切片。' })]),
       h('div', { class: 'table-scroll' }, [h('table', { class: 'scores' }, [h('thead', {}, [head]), h('tbody', {}, rows)])])
     ]));
 
@@ -517,6 +521,57 @@
     energyChart(big, w, { height: window.innerWidth < 600 ? 220 : 280, accent: true, mark: p });
     charts.forEach(function (c) { energyChart(c[0], c[1], { height: 130, small: true, xMax: xMax }); });
     root.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  // ---------- 短视频切片 ----------
+
+  function clipCard(r, kind, name) {
+    var c = r.f.clips[kind];
+    var meters = h('div', { class: 'meters' });
+    judge.clip.readout(c).forEach(function (m) {
+      var fill = h('span', { class: 'bar-fill is-one' });
+      fill.style.width = m.score + '%';
+      meters.appendChild(h('span', { class: 'meter-label', text: m.label, title: m.blurb }));
+      meters.appendChild(h('span', { class: 'bar-track' }, [fill]));
+      meters.appendChild(h('span', { class: 'bar-val', text: String(m.score) }));
+      meters.appendChild(h('span', { class: 'meter-text', text: m.text }));
+    });
+    return h('div', { class: 'clip-card' }, [
+      h('div', { class: 'clip-head' }, [
+        h('span', { class: 'clip-name', text: name }),
+        h('span', { class: 'clip-score num', text: String(Math.round(c.score)) })
+      ]),
+      h('p', { class: 'clip-where num', text: judge.clip.range(c) + ' · ' + c.len.toFixed(1) + ' 秒' + (c.bars ? ' · ' + c.bars + ' 小节' : '') }),
+      kind === 'hook' && !c.fromHook ? h('p', { class: 'clip-note', text: '这首歌没有会回来的 hook，取的是全曲最响的一段。' }) : null,
+      h('div', {}, [playButton(r.id, c.start, c.len, '听这条切片')]),
+      meters
+    ]);
+  }
+
+  function clipSection(v) {
+    var w = v.winner;
+    var head = h('tr', {}, [
+      h('th', { scope: 'col', text: '歌曲' }), h('th', { scope: 'col', text: '前奏切片' }), h('th', { scope: 'col', text: '分' }),
+      h('th', { scope: 'col', text: 'Hook 切片' }), h('th', { scope: 'col', text: '分' })
+    ]);
+    var rows = v.ranked.map(function (r) {
+      var a = r.f.clips.intro, b = r.f.clips.hook;
+      return h('tr', { class: r === w ? 'is-one' : '' }, [
+        h('td', { text: r.rank + '. ' + r.name }),
+        h('td', {}, [playButton(r.id, a.start, a.len, '')]), h('td', { class: 'total', text: String(Math.round(a.score)) }),
+        h('td', {}, [playButton(r.id, b.start, b.len, '')]), h('td', { class: 'total', text: String(Math.round(b.score)) })
+      ]);
+    });
+    return h('section', { class: 'block' }, [
+      h('div', { class: 'block-head' }, [
+        h('h2', { text: '剪下来的那几秒' }),
+        h('p', { text: '每首歌在开头和 hook 段里各挑出最好用的 5–10 秒：长度取整小节，起点落在重音上。打分只看片段自己的五件事：起手、卡点、循环接缝、不塌、手机外放。hook 回来几次、要等多久才出现，归「Hook 记忆点」和「黄金开场」管，这里不重复计。' })
+      ]),
+      h('div', { class: 'clips' }, [clipCard(w, 'intro', '前奏切片'), clipCard(w, 'hook', 'Hook 切片')]),
+      h('div', { class: 'table-scroll' }, [h('table', { class: 'scores clips-table' }, [
+        h('caption', { text: '每一首该剪哪两段' }), h('thead', {}, [head]), h('tbody', {}, rows)
+      ])])
+    ]);
   }
 
   function payoffLabel(w) {
@@ -539,8 +594,11 @@
 
   // ---------- 事件 ----------
 
-  judge.DIMS.forEach(function (d) {
-    el.criteria.appendChild(h('li', {}, [h('b', { text: d.label }), h('em', { text: Math.round(d.weight * 100) + '%' }), h('span', { text: d.blurb })]));
+  [['song', '整首歌'], ['clip', '剪下来的那几秒']].forEach(function (g) {
+    el.criteria.appendChild(h('li', { class: 'criteria-group', text: g[1] }));
+    judge.DIMS.filter(function (d) { return d.group === g[0]; }).forEach(function (d) {
+      el.criteria.appendChild(h('li', {}, [h('b', { text: d.label }), h('em', { text: Math.round(d.weight * 100) + '%' }), h('span', { text: d.blurb })]));
+    });
   });
 
   el.input.addEventListener('change', function () { addFiles(el.input.files); el.input.value = ''; });

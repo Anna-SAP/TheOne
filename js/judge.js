@@ -2,7 +2,7 @@
  * THE ONE — 评分与判词
  *
  * 输入：每首歌的客观测量（analysis.js 的输出）。
- * 输出：七个维度的分数、总排名，以及一份只选一首的制作人判词。
+ * 输出：九个维度的分数（七项看整首歌，两项看短视频切片）、总排名，以及一份只选一首的制作人判词。
  *
  * 判词里的每一句都由这批歌自己的测量值决定：数字、时间点、被点名的对手
  * 全部来自数据，没有任何一句是不看输入就能写出来的。
@@ -10,14 +10,17 @@
 (function (root) {
   'use strict';
 
+  // 前七项看整首歌，后两项看“剪下来的那几秒”。原有七项按原比例让出 23% 给两项切片。
   var DIMS = [
-    { id: 'hook',    label: 'Hook 记忆点', weight: 0.26, blurb: '有没有一段会原样回来、让人记住的东西' },
-    { id: 'payoff',  label: '爆点落差',    weight: 0.18, blurb: '进 hook 的那一下，能量抬得够不够' },
-    { id: 'opening', label: '黄金开场',    weight: 0.16, blurb: '多快进入状态，多快亮出 hook' },
-    { id: 'groove',  label: '律动',        weight: 0.14, blurb: '拍点稳不稳，身体跟不跟得上' },
-    { id: 'sound',   label: '声音完成度',  weight: 0.10, blurb: '响度、动态、声场、高频是否到位' },
-    { id: 'tonal',   label: '旋律调性',    weight: 0.08, blurb: '调性是否清晰，旋律有没有落脚点' },
-    { id: 'form',    label: '结构效率',    weight: 0.08, blurb: '篇幅和高潮位置是否合理' }
+    { id: 'hook',      group: 'song', label: 'Hook 记忆点', weight: 0.20, blurb: '整首歌里有没有一段会原样回来、让人记住的东西' },
+    { id: 'payoff',    group: 'song', label: '爆点落差',    weight: 0.14, blurb: '进 hook 的那一下，能量抬得够不够' },
+    { id: 'opening',   group: 'song', label: '黄金开场',    weight: 0.12, blurb: '整首歌里多快进入状态，多快亮出 hook' },
+    { id: 'groove',    group: 'song', label: '律动',        weight: 0.11, blurb: '拍点稳不稳，身体跟不跟得上' },
+    { id: 'sound',     group: 'song', label: '声音完成度',  weight: 0.08, blurb: '响度、动态、声场、高频是否到位' },
+    { id: 'tonal',     group: 'song', label: '旋律调性',    weight: 0.06, blurb: '调性是否清晰，旋律有没有落脚点' },
+    { id: 'form',      group: 'song', label: '结构效率',    weight: 0.06, blurb: '篇幅和高潮位置是否合理' },
+    { id: 'introClip', group: 'clip', label: '前奏切片',    weight: 0.09, blurb: '把开头最好用的 5–10 秒单独剪出来，能不能直接当短视频配乐' },
+    { id: 'hookClip',  group: 'clip', label: 'Hook 切片',   weight: 0.14, blurb: '把 hook 段最好用的 5–10 秒单独剪出来，脱离整首歌还立不立得住' }
   ];
 
   // ---------- 小工具 ----------
@@ -77,6 +80,10 @@
 
     s.form = 100 * (0.7 * trap(f.duration, 60, 125, 225, 330) +
       0.3 * trap((f.peakWin.time + f.peakWin.len / 2) / f.duration, 0.15, 0.4, 0.92, 1.05));
+
+    // 切片分只看片段自己（起手、卡点、循环接缝、不塌、手机外放），不用“回来几次”“等多久”这类全曲信息
+    s.introClip = f.clips.intro.score;
+    s.hookClip = f.clips.hook.score;
 
     var total = 0;
     DIMS.forEach(function (d) { s[d.id] = Math.round(s[d.id] * 10) / 10; total += d.weight * s[d.id]; });
@@ -325,6 +332,95 @@
     }
   };
 
+  // ---------- 句子：短视频切片 ----------
+
+  var CLIP_PARTS = [
+    { id: 'punch', label: '起手', blurb: '第一秒站不站得住' },
+    { id: 'beat',  label: '卡点', blurb: '片段里的拍点清不清楚' },
+    { id: 'seam',  label: '循环接缝', blurb: '播完跳回开头接不接得上' },
+    { id: 'solid', label: '不塌', blurb: '中间有没有掉下去的空洞' },
+    { id: 'phone', label: '手机外放', blurb: '手机喇叭放得出来的频段占多少' }
+  ];
+  function partLabel(id) { return CLIP_PARTS.filter(function (p) { return p.id === id; })[0].label; }
+  function clipRange(c) { return time(c.start) + '–' + time(c.start + c.len); }
+  function clipLen(c) { return n1(c.len) + ' 秒' + (c.bars ? '（' + c.bars + ' 小节）' : ''); }
+  /** 分项从弱到强排 */
+  function partsAsc(c) { return CLIP_PARTS.map(function (p) { return p.id; }).sort(function (a, b) { return c.parts[a] - c.parts[b]; }); }
+  function softStart(c) { return c.raw.firstDb > -1; } // 第一秒不轻，但起点没踩在重音上
+
+  var clipGood = {
+    punch: function (c) { return c.raw.firstDb >= -0.5 ? '第一秒就是整段的满音量' : '第一秒只比整段轻 ' + n1(-c.raw.firstDb) + ' dB'; },
+    beat: function (c) { return '拍点清晰度 ' + n2(c.raw.pulse); },
+    seam: function (c) { return c.raw.seamSim != null ? '播完跳回开头的衔接度 ' + pct(c.raw.seamSim) : '首尾响度只差 ' + n1(c.raw.jumpDb) + ' dB'; },
+    solid: function (c) { return '中间最轻的一秒只掉 ' + n1(-c.raw.dipDb) + ' dB'; },
+    phone: function (c) { return '手机喇叭放得出来的频段占 ' + pct(c.raw.phoneShare) + ' 的能量'; }
+  };
+  var clipBad = {
+    punch: function (c) { return softStart(c) ? '起点没有踩在重音上，开头是软的' : '第一秒比整段轻 ' + n1(-c.raw.firstDb) + ' dB，开头是虚的，刷到的人等不到它响起来'; },
+    beat: function (c) { return '拍点清晰度只有 ' + n2(c.raw.pulse) + '，画面找不到可以卡的点'; },
+    seam: function (c) {
+      return c.raw.seamSim != null && c.raw.seamSim < 0.6 ? '播完跳回开头时接不上（衔接度 ' + pct(c.raw.seamSim) + '），每循环一圈就跳一下'
+        : '结尾和开头的响度差了 ' + n1(c.raw.jumpDb) + ' dB，循环时会突然变响或变轻';
+    },
+    solid: function (c) { return '中间有一秒塌下去 ' + n1(-c.raw.dipDb) + ' dB，几秒钟的片段经不起一个空洞'; },
+    phone: function (c) { return '手机喇叭放得出来的频段只占 ' + pct(c.raw.phoneShare) + ' 的能量，外放时只剩薄薄一层'; }
+  };
+  var clipFix = {
+    punch: function (c) { return '把切片的起点对准最重的那一拍，或者在它前面加一个重音。现在' + (softStart(c) ? '起点没有踩在重音上' : '第一秒比整段轻 ' + n1(-c.raw.firstDb) + ' dB') + '。'; },
+    beat: function (c) { return '把这几秒里鼓的瞬态提出来。现在拍点清晰度只有 ' + n2(c.raw.pulse) + '，卡点视频用不了。'; },
+    seam: function (c) { return '把这一句的结尾改成能接回开头的写法。现在' + (c.raw.seamSim != null ? '循环的衔接度只有 ' + pct(c.raw.seamSim) : '首尾响度差 ' + n1(c.raw.jumpDb) + ' dB') + '。'; },
+    solid: function (c) { return '填掉中间那个塌下去 ' + n1(-c.raw.dipDb) + ' dB 的空洞：加一个过门，或者让铺底别停。'; },
+    phone: function (c) { return '给主旋律叠一层 1–4 kHz 的音色。现在手机喇叭放得出来的只占 ' + pct(c.raw.phoneShare) + ' 的能量。'; }
+  };
+
+  [['introClip', 'intro', '前奏切片'], ['hookClip', 'hook', 'Hook 切片']].forEach(function (def) {
+    var dim = def[0], kind = def[1], name = def[2];
+
+    weak[dim] = function (r, w, S, O) {
+      var c = r.f.clips[kind], worst = partsAsc(c)[0];
+      var head = S + '的' + (/^[A-Za-z]/.test(name) ? ' ' : '') + name + '（' + clipRange(c) + '）';
+      if (c.parts[worst] < 70) return head + clipBad[worst](c) + '。';
+      return head + '得 ' + Math.round(c.score) + ' 分，' + O + '是 ' + Math.round(w.f.clips[kind].score) + ' 分，每一项都差一点。';
+    };
+
+    strong[dim] = function (r) {
+      var c = r.f.clips[kind];
+      return clipRange(c) + '，' + clipGood[partsAsc(c).pop()](c);
+    };
+
+    win[dim] = function (w) {
+      var c = w.f.clips[kind], order = partsAsc(c).reverse();
+      var lead = kind === 'hook' && !c.fromHook ? '这首歌没有会回来的 hook，所以取的是全曲最响的一段。' : '';
+      return {
+        title: name + '：' + clipRange(c) + '，剪下来就能用',
+        body: [
+          lead + '把 ' + clipRange(c) + ' 这 ' + clipLen(c) + '单独剪出来：' + order.slice(0, 3).map(function (id) { return clipGood[id](c); }).join('，') + '。',
+          kind === 'hook' ? '它不需要前后文。脱离整首歌，这几秒自己就撑得起一条视频。' : '短视频不会等前奏铺完。这几秒从第一帧起就能用。'
+        ],
+        stats: [['位置', clipRange(c)], ['时长', n1(c.len) + ' 秒']].concat(order.slice(0, 3).map(function (id) { return [partLabel(id), c.parts[id] + ' 分']; }))
+      };
+    };
+
+    advice[dim] = function (w) {
+      var c = w.f.clips[kind], worst = partsAsc(c)[0];
+      return name + '（' + clipRange(c) + '）最弱的是「' + partLabel(worst) + '」。' + clipFix[worst](c);
+    };
+  });
+  tagline.introClip = '开头那几秒，剪下来就是一条视频。';
+  tagline.hookClip = '最好的那几秒，剪下来自己就能传。';
+
+  /** 给界面用：一条切片的五个分项，各带一句读数 */
+  function clipReadout(c) {
+    var text = {
+      punch: '第一秒 ' + (c.raw.firstDb >= 0 ? '+' : '−') + n1(Math.abs(c.raw.firstDb)) + ' dB',
+      beat: '清晰度 ' + n2(c.raw.pulse),
+      seam: c.raw.seamSim != null ? '衔接度 ' + pct(c.raw.seamSim) : '首尾差 ' + n1(c.raw.jumpDb) + ' dB',
+      solid: '最轻处 −' + n1(-c.raw.dipDb) + ' dB',
+      phone: '占 ' + pct(c.raw.phoneShare) + ' 能量'
+    };
+    return CLIP_PARTS.map(function (p) { return { id: p.id, label: p.label, blurb: p.blurb, score: c.parts[p.id], text: text[p.id] }; });
+  }
+
   // ---------- 汇总：排名 + 判词 ----------
 
   /**
@@ -400,7 +496,7 @@
     };
   }
 
-  var api = { judge: judge, scoreTrack: scoreTrack, DIMS: DIMS, format: { time: time } };
+  var api = { judge: judge, scoreTrack: scoreTrack, DIMS: DIMS, format: { time: time }, clip: { parts: CLIP_PARTS, readout: clipReadout, range: clipRange } };
   root.TheOne = root.TheOne || {};
   root.TheOne.judge = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
