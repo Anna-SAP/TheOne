@@ -157,7 +157,12 @@
     catch (e) { ctx = new Offline(2, 44100, 44100); }
     var audio;
     try { audio = await decodeWith(ctx, buf); }
-    catch (e) { throw new Error('浏览器解不开这个文件，换成 mp3 / wav / m4a 再试'); }
+    catch (e) {
+      // 解码会把缓冲区清空，所以重新读一遍字节，看看这个文件到底是什么
+      var why = null;
+      try { why = T.sniff.diagnose(new Uint8Array(await file.arrayBuffer()), file.name); } catch (e2) { /* 读不了就用通用提示 */ }
+      throw new Error(why ? why.message : '浏览器解不开这个文件，换成 mp3 / wav / m4a 再试');
+    }
     if (audio.duration > MAX_SECONDS) throw new Error('超过 15 分钟，这不是一首歌的长度');
     var channels = [];
     for (var c = 0; c < Math.min(2, audio.numberOfChannels); c++) channels.push(audio.getChannelData(c));
@@ -199,7 +204,7 @@
     var ok = state.tracks.filter(function (t) { return t.status === 'done'; });
     renderQueue();
     if (ok.length < 2) {
-      setNote('能听的不足两首，没法比。换几个文件再试。', true);
+      setNote('能听的不足两首，没法比。每个文件为什么听不了写在它下面，换掉它们再试。', true);
       return;
     }
     var failed = state.tracks.length - ok.length;
