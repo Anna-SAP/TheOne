@@ -52,6 +52,7 @@ styles.css      样式（明暗两套主题）
 js/analysis.js  音频测量引擎（无 DOM 依赖）
 js/judge.js     评分与判词
 js/demo.js      示例歌曲合成器
+js/sniff.js     解码失败时的文件诊断（加密缓存、DRM、不支持的编码、文件不完整）
 js/app.js       界面：上传、进度、判决页、试听
 test/           node --test 单元测试
 ```
