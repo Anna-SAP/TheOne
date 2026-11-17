@@ -61,3 +61,41 @@ test('换一批歌，判词跟着变', async () => {
 test('少于两首不判', () => {
   assert.throws(() => judge([{ id: 'a', name: 'a', f: {} }]), /至少/);
 });
+
+test('记分表有九项：七项看整首歌，两项看切片', () => {
+  assert.equal(DIMS.length, 9);
+  assert.deepEqual(DIMS.filter(d => d.group === 'clip').map(d => d.id), ['introClip', 'hookClip']);
+  // 原有七项之间的相对比例不变（各自按 77% 缩放后取整）
+  const old = { hook: 26, payoff: 18, opening: 16, groove: 14, sound: 10, tonal: 8, form: 8 };
+  for (const d of DIMS.filter(d => d.group === 'song')) assert.equal(Math.round(d.weight * 100), Math.round(old[d.id] * 0.77), d.id);
+});
+
+test('切片分只取决于切片自己：改掉全曲的 hook 结构，两项切片分不变', async () => {
+  const { scoreTrack } = require('../js/judge.js');
+  const f = (await tracks())[0].f;
+  const base = scoreTrack(f).scores;
+  assert.equal(base.introClip, f.clips.intro.score);
+  assert.equal(base.hookClip, f.clips.hook.score);
+  const altered = scoreTrack({ ...f, intro: 40, hook: { ...f.hook, returns: 1, coverage: 0.9, start: 90 } }).scores;
+  assert.notEqual(altered.hook, base.hook);
+  assert.notEqual(altered.opening, base.opening);
+  assert.equal(altered.introClip, base.introClip);
+  assert.equal(altered.hookClip, base.hookClip);
+});
+
+test('两首歌只有切片不同时：理由就是切片，并带着时间范围和具体读数', async () => {
+  const f = (await tracks())[0].f;
+  const worse = {
+    intro: { ...f.clips.intro, score: 40, parts: { ...f.clips.intro.parts, punch: 15 }, raw: { ...f.clips.intro.raw, firstDb: -5.2 } },
+    hook: { ...f.clips.hook, score: 55, parts: { ...f.clips.hook.parts, phone: 8 }, raw: { ...f.clips.hook.raw, phoneShare: 0.06 } }
+  };
+  const v = judge([{ id: 'a', name: '原版', f }, { id: 'b', name: '改版', f: { ...f, clips: worse } }]);
+  assert.equal(v.winner.name, '原版');
+  assert.deepEqual(v.reasons.map(r => r.dim).sort(), ['hookClip', 'introClip']);
+  const hookReason = v.reasons.find(r => r.dim === 'hookClip');
+  assert.match(hookReason.title, /^Hook 切片：\d+:\d\d–\d+:\d\d/);
+  assert.match(hookReason.versus[0], /《改版》的 Hook 切片（.+）手机喇叭放得出来的频段只占 6% 的能量/);
+  const introReason = v.reasons.find(r => r.dim === 'introClip');
+  assert.match(introReason.versus[0], /第一秒比整段轻 5\.2 dB/);
+  assert.match(v.verdicts[0].text, /切片/);
+});

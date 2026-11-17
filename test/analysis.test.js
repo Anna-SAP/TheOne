@@ -70,3 +70,33 @@ test('非 22.05 kHz 的输入会先降采样，结果一致', async () => {
   assert.ok(Math.abs(f.duration - 20) < 0.1);
   assert.ok(Math.abs(f.lufs - (-3.01)) < 0.6, `lufs=${f.lufs}`);
 });
+
+test('切片：两条都在 5–10 秒之间，长度是整小节，分数和分项都在 0–100', async () => {
+  for (let i = 0; i < demo.DEMOS.length; i++) {
+    const { f } = await analyzed(i);
+    const bar = 240 / f.bpm;
+    for (const kind of ['intro', 'hook']) {
+      const c = f.clips[kind];
+      assert.ok(c.len >= 5 && c.len <= 10.01, `${demo.DEMOS[i].name} ${kind} len=${c.len}`);
+      assert.ok(Math.abs(c.len - c.bars * bar) < 0.02, '长度应当是整小节');
+      assert.ok(c.start >= 0 && c.start + c.len <= f.duration + 0.01);
+      assert.ok(c.score >= 0 && c.score <= 100);
+      for (const v of Object.values(c.parts)) assert.ok(v >= 0 && v <= 100);
+    }
+  }
+});
+
+test('切片：示例 A 的 Hook 切片落在副歌里，前奏切片在第一次副歌之前', async () => {
+  const { song, f } = await analyzed(0);
+  const chorus = song.map.filter(s => s.kind === 'chorus');
+  const h = f.clips.hook, intro = f.clips.intro;
+  assert.ok(chorus.some(s => h.start >= s.start - 1 && h.start + h.len <= s.end + 1), `hook clip ${h.start}–${h.start + h.len}`);
+  assert.ok(intro.start + intro.len <= chorus[0].start + 0.5, `intro clip ${intro.start}–${intro.start + intro.len}`);
+  assert.equal(h.fromHook, true);
+});
+
+test('切片：只有铺底、没有鼓的前奏，卡点分明显低于副歌里的切片', async () => {
+  const { f } = await analyzed(1); // 示例 B 的前 20 秒只有铺底和弦
+  assert.ok(f.clips.intro.parts.beat < 40, `intro beat=${f.clips.intro.parts.beat}`);
+  assert.ok(f.clips.hook.parts.beat > f.clips.intro.parts.beat + 25);
+});

@@ -5,7 +5,9 @@
  * 响度（近似 ITU-R BS.1770 的 K 计权 LUFS）、节拍与律动稳定度、调性、
  * 频段平衡、声场宽度，以及基于自相似矩阵的“重复段落（hook）”检测。
  *
- * 这里只做测量，不做任何好坏判断——评分和判词在 judge.js。
+ * 这里只做测量，好坏判断（评分和判词）在 judge.js。
+ * 唯一的例外是短视频切片：要在一段里挑出“最好用”的 5–10 秒，挑选本身就需要一把尺子，
+ * 所以切片的五个分项在这里算好，judge.js 直接采用。
  * 不依赖 DOM，浏览器和 Node 都能跑。
  */
 (function (root) {
@@ -38,6 +40,8 @@
   }
 
   function clamp(x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; }
+  function ramp(x, a, b) { return clamp((x - a) / (b - a), 0, 1); }
+  function trap(x, a, b, c, d) { return x <= b ? ramp(x, a, b) : 1 - ramp(x, c, d); }
 
   /** 粗略重采样（盒式平均抗混叠 + 线性插值），只在浏览器无法直接按 22.05 kHz 解码时使用。 */
   function resample(x, from, to) {
@@ -247,7 +251,7 @@
 
   function rhythm(onset, onsetLow) {
     var n = onset.length;
-    if (n < FPS * 8) return { bpm: 0, pulse: 0, onsetRate: 0, lowPulse: 0 };
+    if (n < FPS * 8) return { bpm: 0, pulse: 0, onsetRate: 0, lowPulse: 0, env: null, period: 0 };
     // 去掉 1 秒滑动均值并半波整流，只留“冒头”的起音
     var env = new Float32Array(n), w = Math.round(FPS / 2), run = 0;
     var pre = new Float64Array(n + 1);
@@ -261,7 +265,7 @@
     var top = Math.min(n - 1, maxLag * 4 + 4);
     var ac = new Float32Array(top + 1), e0 = 0;
     for (var j = 0; j < n; j++) e0 += env[j] * env[j];
-    if (e0 <= 0) return { bpm: 0, pulse: 0, onsetRate: 0, lowPulse: 0 };
+    if (e0 <= 0) return { bpm: 0, pulse: 0, onsetRate: 0, lowPulse: 0, env: null, period: 0 };
     for (var lag = 1; lag <= top; lag++) {
       var s = 0;
       for (var x = 0; x + lag < n; x++) s += env[x] * env[x + lag];
@@ -301,7 +305,8 @@
       bpm: 60 * FPS / period,
       pulse: clamp(ac[best], 0, 1),
       onsetRate: count / (n / FPS),
-      lowPulse: allSum ? lowSum / allSum : 0
+      lowPulse: allSum ? lowSum / allSum : 0,
+      env: env, period: period
     };
   }
 
@@ -354,13 +359,8 @@
     return out;
   }
 
-  /**
-   * 以每个长度为 W 的片段为参照，看全曲还有哪些地方和它“和声 + 配器”都对得上。
-   * 对得上的区域连成片，中间隔着别的素材才算一次新的“登场”。
-   * 得分最高的参照片段就是 hook。
-   */
-  function structure(spec, nCells, W, loud, lufs) {
-    if (nCells < W * 3) return null;
+  /** 每格：去均值归一化的色度（和声）+ 相对频带电平（配器/能量），结构分析和切片共用。 */
+  function cellFeatures(spec, nCells) {
     var chroma = smoothCells(spec.cellChroma, nCells, 12), band = smoothCells(spec.cellBand, nCells, 8);
     var ch = new Float32Array(nCells * 12), tb = new Float32Array(nCells * 8);
     var med = [];
@@ -378,15 +378,29 @@
       for (var p3 = 0; p3 < 12; p3++) ch[c * 12 + p3] = e > 1e-6 ? ch[c * 12 + p3] / e : 0;
       for (var q = 0; q < 8; q++) tb[c * 8 + q] = 10 * Math.log10(band[c * 8 + q] + 1e-9) - med[q];
     }
-    // 逐格相似度 = 色度相关（和声） × 频带电平接近度（配器/能量）
+    return { ch: ch, tb: tb };
+  }
+
+  /** 两格之间的相似度 = 色度相关（和声） × 频带电平接近度（配器/能量） */
+  function cellSim(F, i, j) {
+    var dot = 0, dist = 0;
+    for (var k = 0; k < 12; k++) dot += F.ch[i * 12 + k] * F.ch[j * 12 + k];
+    for (var k2 = 0; k2 < 8; k2++) { var dd = F.tb[i * 8 + k2] - F.tb[j * 8 + k2]; dist += dd * dd; }
+    return dot > 0 ? dot * Math.exp(-(dist / 8) / 50) : 0;
+  }
+
+  /**
+   * 以每个长度为 W 的片段为参照，看全曲还有哪些地方和它“和声 + 配器”都对得上。
+   * 对得上的区域连成片，中间隔着别的素材才算一次新的“登场”。
+   * 得分最高的参照片段就是 hook。
+   */
+  function structure(F, nCells, W, loud, lufs) {
+    if (nCells < W * 3) return null;
     var S = new Float32Array(nCells * nCells);
     for (var i = 0; i < nCells; i++) {
       for (var j = i; j < nCells; j++) {
-        var dot = 0, dist = 0;
-        for (var k = 0; k < 12; k++) dot += ch[i * 12 + k] * ch[j * 12 + k];
-        for (var k2 = 0; k2 < 8; k2++) { var dd = tb[i * 8 + k2] - tb[j * 8 + k2]; dist += dd * dd; }
-        var s = dot > 0 ? dot * Math.exp(-(dist / 8) / 50) : 0;
-        S[i * nCells + j] = s; S[j * nCells + i] = s;
+        var sv = cellSim(F, i, j);
+        S[i * nCells + j] = sv; S[j * nCells + i] = sv;
       }
     }
     // D(t,u)：两段长度为 W 的片段沿对角线的平均相似度
@@ -430,6 +444,7 @@
       return {
         score: Math.pow(weight, 0.8) * quality * energy,
         occ: comps.map(function (cp) { return cp.start; }),
+        spans: comps.map(function (cp) { return [cp.start, Math.min(cp.end, nCells)]; }),
         returns: comps.length, coverage: covered / nCells, quality: quality
       };
     }
@@ -448,6 +463,110 @@
       if (lf > bestLift) { bestLift = lf; pick = t3; }
     }
     return cands[pick];
+  }
+
+  // ---------- 短视频切片：在一段里挑出最好用的 5–10 秒 ----------
+
+  var CLIP_WEIGHTS = { punch: 0.26, beat: 0.22, seam: 0.20, solid: 0.14, phone: 0.18 };
+
+  /**
+   * 切片是脱离整首歌单独使用的，所以这里只看片段自己：
+   *   punch 起手     第一秒是不是就站住了（第一秒响度 vs 整段、起点有没有落在重音上）
+   *   beat  卡点     片段内部的拍点清不清楚，画面能不能跟着切
+   *   seam  循环接缝 播完跳回开头时接不接得上（长度取整小节，再比较“结尾之后”和“开头”）
+   *   solid 不塌     中间有没有掉下去的空洞
+   *   phone 手机外放 手机喇叭放得出来的频段（约 320 Hz–5 kHz）占多少能量
+   * 这五项都不使用“回来几次”“等多久才出现”之类的全曲结构信息。
+   */
+  function clipScout(o) {
+    var env = o.env, nFr = env ? env.length : 0;
+    var ref = env ? percentile(env, 0.98) || 1 : 1;
+    var bar = o.bpm > 0 ? 240 / o.bpm : 0, lens = [];
+    for (var k = 1; bar > 0 && k * bar <= 10.001; k++) if (k * bar >= 5) lens.push({ len: k * bar, bars: k });
+    if (!lens.length) lens = [6, 8, 10].map(function (l) { return { len: l, bars: null }; });
+
+    function lufsAt(t0, t1) {
+      var a = clamp(Math.round(t0 / CHUNK), 0, o.Lc.n), b = clamp(Math.round(t1 / CHUNK), 0, o.Lc.n);
+      return b > a ? Math.max(-70, toLufs((o.Lc.pre[b] - o.Lc.pre[a]) / (b - a))) : -70;
+    }
+
+    function measure(s, len, bars) {
+      var e = s + len, whole = lufsAt(s, e);
+      var firstDb = lufsAt(s, s + 1) - whole;
+      var f0 = Math.round(s * FPS), hit = 0, pulse = 0, hits = 0;
+      var frS = clamp(Math.floor(s * FPS), 0, nFr), frE = clamp(Math.floor(e * FPS), 0, nFr);
+      if (env) {
+        for (var i = Math.max(0, f0 - 1); i <= Math.min(nFr - 1, f0 + 4); i++) if (env[i] > hit) hit = env[i];
+        hit /= ref;
+        var e0 = 0, P = Math.round(o.period);
+        for (var j = frS; j < frE; j++) e0 += env[j] * env[j];
+        for (var lag = Math.max(1, P - 1); P > 0 && e0 > 0 && lag <= P + 1; lag++) {
+          var acc = 0, span = frE - frS;
+          for (var x = frS; x + lag < frE; x++) acc += env[x] * env[x + lag];
+          var ac = span > lag ? (acc / e0) * (span / (span - lag)) : 0;
+          if (ac > pulse) pulse = ac;
+        }
+        for (var p = frS + 3; p < frE - 3; p++) {
+          if (env[p] < 0.25 * ref) continue;
+          var isPeak = true;
+          for (var q = p - 3; q <= p + 3; q++) if (env[q] > env[p]) { isPeak = false; break; }
+          if (isPeak) { hits++; p += 2; }
+        }
+      }
+      var cs = clamp(Math.floor(s / CELL), 0, o.nCells - 1), ce = clamp(Math.floor(e / CELL), 0, o.nCells);
+      var seamSim = ce + 1 < o.nCells && cs + 1 < o.nCells ? (cellSim(o.F, ce, cs) + cellSim(o.F, ce + 1, cs + 1)) / 2 : null;
+      var jumpDb = Math.abs(lufsAt(e - 0.5, e) - lufsAt(s, s + 0.5));
+      var dipDb = 0;
+      for (var w = s; w + 1 <= e + 1e-6; w += 0.1) { var d = lufsAt(w, w + 1) - whole; if (d < dipDb) dipDb = d; }
+      var mid = 0, all = 0;
+      for (var c = cs; c < Math.max(ce, cs + 1) && c < o.nCells; c++) for (var b = 0; b < 8; b++) {
+        var pw = o.cellBand[c * 8 + b];
+        all += pw; if (b >= 3 && b <= 6) mid += pw;
+      }
+      var phoneDb = 10 * Math.log10((mid + 1e-12) / (all + 1e-12));
+      var jumpScore = 1 - ramp(jumpDb, 1.5, 8);
+      var parts = {
+        punch: 0.6 * ramp(firstDb, -6, 0) + 0.4 * ramp(hit, 0.15, 0.8),
+        beat: 0.7 * ramp(pulse, 0.1, 0.8) + 0.3 * trap(hits / len, 0.8, 2, 6, 9),
+        seam: seamSim == null ? jumpScore : 0.6 * ramp(seamSim, 0.35, 0.95) + 0.4 * jumpScore,
+        solid: ramp(dipDb, -8, -1),
+        phone: ramp(phoneDb, -13, -2)
+      };
+      var score = 0;
+      Object.keys(CLIP_WEIGHTS).forEach(function (key) { score += CLIP_WEIGHTS[key] * parts[key]; parts[key] = Math.round(parts[key] * 100); });
+      return {
+        start: Math.round(s * 100) / 100, len: Math.round(len * 100) / 100, bars: bars,
+        score: Math.round(score * 1000) / 10, parts: parts,
+        raw: { firstDb: firstDb, pulse: clamp(pulse, 0, 1), seamSim: seamSim, jumpDb: jumpDb, dipDb: dipDb, phoneDb: phoneDb, phoneShare: Math.pow(10, phoneDb / 10) }
+      };
+    }
+
+    /** 在 [a, b] 秒之间找得分最高的切片。起点只取重音位置，长度只取整小节。 */
+    function best(a, b) {
+      var minLen = lens[0].len;
+      a = clamp(a, 0, Math.max(0, o.duration - minLen));
+      b = Math.min(o.duration, Math.max(b, a + minLen + 0.05));
+      var starts = [a], peaks = [];
+      for (var p = Math.max(3, Math.ceil(a * FPS)); env && p < Math.min(nFr - 3, Math.floor((b - minLen) * FPS)); p++) {
+        if (env[p] < 0.2 * ref) continue;
+        var isPeak = true;
+        for (var q = p - 3; q <= p + 3; q++) if (env[q] > env[p]) { isPeak = false; break; }
+        if (isPeak) peaks.push(p);
+      }
+      peaks.sort(function (x, y) { return env[y] - env[x]; });
+      peaks.slice(0, 40).forEach(function (p) { starts.push(Math.max(a, p / FPS + 0.02)); });
+      var top = null;
+      starts.forEach(function (s) {
+        lens.forEach(function (l) {
+          if (s + l.len > b + 0.3 || s + l.len > o.duration) return;
+          var m = measure(s, l.len, l.bars);
+          if (!top || m.score > top.score) top = m;
+        });
+      });
+      return top || measure(a, Math.min(minLen, o.duration - a), lens[0].bars);
+    }
+
+    return { best: best };
   }
 
   // ---------- 主流程 ----------
@@ -522,7 +641,8 @@
 
     // 重复段落
     var W = Math.round(clamp(duration / 8, 4, 12) / CELL);
-    var st = structure(spec, nCells, W, loud, lufs);
+    var F = cellFeatures(spec, nCells);
+    var st = structure(F, nCells, W, loud, lufs);
     if (onProgress) onProgress(0.97);
     await tick();
 
@@ -552,6 +672,25 @@
       };
     }
 
+    // 短视频切片：开头一段、hook 段各挑一条
+    var scout = clipScout({ env: rh.env, period: rh.period, bpm: rh.bpm, Lc: Lc, F: F, cellBand: spec.cellBand, nCells: nCells, duration: duration });
+    var firstSound = 0;
+    for (var fs = 0; fs < Lc.n; fs++) { if (toLufs(Lc.z[fs]) > -60) { firstSound = fs * CHUNK; break; } }
+    // 前奏切片的取材范围：开头 20 秒；如果第一次 hook 在这之前登场，就到 hook 为止
+    var introEnd = firstSound + 20;
+    if (hook && hook.returns >= 2 && hook.start - firstSound >= 10) introEnd = Math.min(introEnd, hook.start);
+    var introClip = scout.best(firstSound, introEnd);
+    // Hook 切片的取材范围：hook 的每一次登场；没有 hook 就取全曲最响的一段
+    var spans = st ? st.spans.map(function (sp) { return [sp[0] * CELL, sp[1] * CELL]; }) : [[peakWin.time, peakWin.time + W * CELL]];
+    var hookClip = null;
+    spans.forEach(function (sp) {
+      var cand = scout.best(Math.max(0, sp[0] - 0.5), Math.max(sp[1] + 0.5, sp[0] + 10.5));
+      if (!hookClip || cand.score > hookClip.score) hookClip = cand;
+    });
+    hookClip.fromHook = !!st;
+    if (onProgress) onProgress(0.99);
+    await tick();
+
     // 波形缩略（显示用）
     var PK = 160, peaks = new Float32Array(PK), bucket = Math.floor(n / PK) || 1, pm = 0;
     for (var b = 0; b < PK; b++) {
@@ -578,6 +717,7 @@
       lift: lift,
       hook: hook,
       peakWin: { time: peakWin.time, len: W * CELL, level: peakWin.db - lufs },
+      clips: { intro: introClip, hook: hookClip },
       curve: Array.prototype.slice.call(curve),
       cell: CELL,
       peaks: Array.prototype.slice.call(peaks)
