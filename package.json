@@ -1,0 +1,10 @@
+{
+  "name": "the-one",
+  "version": "1.0.0",
+  "private": true,
+  "description": "上传几首歌，从里面只选一首最有爆款潜质的。纯前端，音频不离开浏览器。",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test"
+  }
+}
