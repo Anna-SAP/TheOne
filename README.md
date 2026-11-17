@@ -4,11 +4,13 @@
 
 纯前端单页应用，没有后端，也没有构建步骤。音频只在浏览器里解码和分析，不会上传。
 
+**在线试用：<https://anna-sap.github.io/TheOne/>**
+
 ## 运行
 
 - 直接双击打开 `index.html`，或者
 - `npm start`（等同于 `python3 -m http.server 8080`），然后打开 <http://localhost:8080>
-- 也可以把仓库根目录直接发布到 GitHub Pages 或任何静态托管
+- 线上版本由 `.github/workflows/pages.yml` 发布：每次 `main` 有新的合并，先跑测试，通过后自动更新 GitHub Pages
 
 手边没有音频时，点「用 3 首合成示例试一下」，应用会现场合成三首结构不同的短歌并走完整个流程。
 
