@@ -1,6 +1,6 @@
 /*
  * THE ONE — 界面
- * 上传 → 逐首解码与测量 → 调 judge 出判词 → 渲染判决页（含可试听的片段）。
+ * 上传 → 逐首解码与测量 → 调 judge 出判词 → 渲染判决页（片段和整首歌都能试听）。
  */
 (function () {
   'use strict';
@@ -288,6 +288,13 @@
     return btn;
   }
 
+  /** 整首试听：从头放到尾，再点一次停下。时长以播放时实际解码出的长度为准 */
+  function fullPlayButton(r) {
+    var btn = h('button', { class: 'play', type: 'button', 'aria-pressed': 'false', 'aria-label': '播放整首：' + r.name + '，全长 ' + fmtTime(r.f.duration), text: fmtTime(r.f.duration) });
+    btn.addEventListener('click', function () { togglePlay(trackById(r.id), 0, Infinity, btn); });
+    return btn;
+  }
+
   /** 这首歌最值得点开听的一段：有真正回归的 hook 就听 hook，否则听最响的一段 */
   function bestClip(r) {
     var hk = r.f.hook;
@@ -382,7 +389,13 @@
     draw();
     if (window.ResizeObserver) {
       var last = host.clientWidth;
-      new ResizeObserver(function () { if (Math.abs(host.clientWidth - last) > 4) { last = host.clientWidth; stopPlayback(); draw(); } }).observe(host);
+      new ResizeObserver(function () {
+        if (Math.abs(host.clientWidth - last) <= 4) return;
+        last = host.clientWidth;
+        // 重画只会让这张图里的色带失效；别处正在放的（比如整首试听）不该被掐掉
+        if (player.btn && host.contains(player.btn)) stopPlayback();
+        draw();
+      }).observe(host);
     }
   }
 
@@ -498,15 +511,15 @@
     var firstClip = judge.DIMS.filter(function (d) { return d.group === 'clip'; })[0];
     var head = h('tr', {}, [h('th', { scope: 'col', text: '歌曲' })].concat(judge.DIMS.map(function (d) {
       return h('th', { scope: 'col', class: d === firstClip ? 'grp' : '' }, [d.label, h('span', { class: 'wt', text: Math.round(d.weight * 100) + '%' })]);
-    })).concat([h('th', { scope: 'col', class: 'grp', text: '总分' })]));
+    })).concat([h('th', { scope: 'col', class: 'grp', text: '总分' }), h('th', { scope: 'col', class: 'listen', text: '整首试听' })]));
     var rows = v.ranked.map(function (r) {
       return h('tr', { class: r === w ? 'is-one' : '' }, [h('td', { text: r.rank + '. ' + r.name })].concat(judge.DIMS.map(function (d) {
         return h('td', { class: d === firstClip ? 'grp' : '', text: String(Math.round(r.scores[d.id])) });
-      })).concat([h('td', { class: 'total grp', text: r.total.toFixed(1) })]));
+      })).concat([h('td', { class: 'total grp', text: r.total.toFixed(1) }), h('td', { class: 'listen' }, [fullPlayButton(r)])]));
     });
     body.appendChild(h('section', { class: 'block' }, [
-      h('div', { class: 'block-head' }, [h('h2', { text: '完整记分表' }), h('p', { text: '每项 0–100 分，表头是它在总分里的权重。前七项看整首歌，后两项看剪下来的切片。' })]),
-      h('div', { class: 'table-scroll' }, [h('table', { class: 'scores' }, [h('thead', {}, [head]), h('tbody', {}, rows)])])
+      h('div', { class: 'block-head' }, [h('h2', { text: '完整记分表' }), h('p', { text: '每项 0–100 分，表头是它在总分里的权重。前七项看整首歌，后两项看剪下来的切片。最右一列从头播放整首歌，再点一次停下。' })]),
+      h('div', { class: 'table-scroll' }, [h('table', { class: 'scores scores-full' }, [h('thead', {}, [head]), h('tbody', {}, rows)])])
     ]));
 
     // 8. 收尾
